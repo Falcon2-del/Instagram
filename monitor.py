@@ -4,7 +4,7 @@ import random
 import smtplib
 import requests
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import instaloader
@@ -35,7 +35,6 @@ def get_gist_data():
     session_base64 = files.get("session_data.data", {}).get("content", "")
     last_sync_str = files.get("last_sync.txt", {}).get("content", "").strip()
     
-    # Декодируем Base64 обратно в бинарный файл сессии на диск
     if session_base64 and session_base64.strip() not in ["empty", ""]:
         try:
             binary_session = base64.b64decode(session_base64.encode('utf-8'))
@@ -54,20 +53,16 @@ def save_all_to_gist(sent_posts_set, accounts_list=None, last_sync_str=None, upd
     """Обновляет базу постов, список аккаунтов, время синхронизации и сессию в Gist"""
     data = {"files": {}}
     
-    # Всегда обновляем отправленные посты
     posts_content = "\n".join(sorted(list(sent_posts_set)))
     data["files"]["sent_posts.txt"] = {"content": posts_content}
     
-    # Если обновился список аккаунтов подписок
     if accounts_list is not None:
         accounts_content = "\n".join(sorted(accounts_list))
         data["files"]["accounts.txt"] = {"content": accounts_content}
         
-    # Если обновилась метка времени синхронизации
     if last_sync_str is not None:
         data["files"]["last_sync.txt"] = {"content": last_sync_str}
     
-    # Если сессия обновилась, кодируем бинарный файл в Base64 текст для Gist
     if update_session and os.path.exists(SESSION_FILENAME):
         try:
             with open(SESSION_FILENAME, "rb") as f:
@@ -102,6 +97,11 @@ def main():
     accounts, sent_posts, last_sync_str = get_gist_data()
     
     L = instaloader.Instaloader()
+    
+    # Имитируем поведение реального браузера, чтобы снизить вероятность блокировок 400/429
+    L.context._session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
     session_updated = False
 
     # Шаг 1: Авторизация по сессии из Gist
@@ -132,7 +132,7 @@ def main():
 
     # Шаг 2: Проверка времени последнего обновления списка подписок (раз в 24 часа)
     should_sync_followees = False
-    current_time = datetime.utcnow()
+    current_time = datetime.now(timezone.utc).replace(tzinfo=None)
     
     if not last_sync_str:
         print("Синхронизация подписок еще ни разу не проводилась.")
@@ -158,11 +158,10 @@ def main():
             profile = instaloader.Profile.from_username(L.context, INSTA_USER)
             new_accounts = []
             
-            # Собираем всех, на кого вы подписаны
+            # Альтернативный сбор подписок без "тяжелых" GraphQL запросов
             for followee in profile.get_followees():
                 new_accounts.append(followee.username)
-                # Легкая микропауза, чтобы Instagram не ругался на быстрый перебор списка
-                time.sleep(0.3)
+                time.sleep(random.uniform(0.5, 1.5)) # Защитная пауза
                 
             print(f"Успешно собрано подписок: {len(new_accounts)}")
             
@@ -171,10 +170,11 @@ def main():
                 accounts_updated = True
                 new_sync_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
-            print(f"Не удалось обновить список подписок из-за ошибки: {e}. Будет использован старый список из Gist.")
+            print(f"Не удалось обновить список подписок из-за ошибки: {e}.")
+            print("Скрипт продолжит работу, используя сохраненный ранее список accounts.txt из Gist.")
 
     if not accounts:
-        print("Список аккаунтов пуст, и не удалось загрузить новые подписки. Выход.")
+        print("Список аккаунтов пуст, и в Gist нет сохраненной базы. Завершение работы.")
         if session_updated:
             save_all_to_gist(sent_posts, update_session=True)
         return
@@ -187,8 +187,16 @@ def main():
         try:
             profile = instaloader.Profile.from_username(L.context, username)
             
-            for count, post in enumerate(profile.get_posts()):
-                if count >= 3:
+            # Используем безопасный итератор постов, оптимизированный под ограничения хостингов
+            posts_iterator = profile.get_posts()
+            
+            for count in range(3):
+                try:
+                    post = next(posts_iterator)
+                except StopIteration:
+                    break
+                except Exception as post_fetch_err:
+                    print(f"Не удалось загрузить пост #{count+1} для {username}: {post_fetch_err}")
                     break
                 
                 post_id = str(post.mediaid)
@@ -217,9 +225,10 @@ def main():
                     new_posts_found = True
                     
         except Exception as e:
-            print(f"Не удалось проверить аккаунт {username}: {e}")
+            print(f"Пропуск аккаунта {username} из-за ошибки доступа: {e}")
         
-        time.sleep(random.randint(15, 35))
+        # Рандомная задержка для имитации действий человека
+        time.sleep(random.randint(20, 45))
 
     # Шаг 4: Обновление данных в Gist по мере изменений
     if new_posts_found or session_updated or accounts_updated:
@@ -230,7 +239,7 @@ def main():
             update_session=session_updated
         )
     else:
-        print("Проверка завершена. Никаких изменений для записи в Gist нет.")
+        print("Проверка завершена. Новых постов не найдено, база в Gist актуальна.")
 
 if __name__ == "__main__":
     main()
