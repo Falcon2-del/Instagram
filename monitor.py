@@ -4,6 +4,7 @@ import random
 import smtplib
 import requests
 import base64
+from datetime import timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import instaloader
@@ -64,7 +65,7 @@ def save_all_to_gist(sent_posts_set, update_session=False):
             with open(SESSION_FILENAME, "rb") as f:
                 session_base64 = base64.b64encode(f.read()).decode('utf-8')
             data["files"]["session_data.data"] = {"content": session_base64}
-            print("Подготовка к обновлению сессии (в формате Base64) в Gist...")
+            print("Подготовка к更新сессии (в формате Base64) в Gist...")
         except Exception as e:
             print(f"Не удалось подготовить сессию для отправки: {e}")
 
@@ -86,7 +87,7 @@ def send_email(subject, body):
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
         server.close()
-        print(f"Письмо успешно отправлено: {subject}")
+        print(f"Письмо успешно отправлено с темой: {subject}")
     except Exception as e:
         print(f"Ошибка при отправке почты: {e}")
 
@@ -145,8 +146,25 @@ def main():
                     post_url = f"https://instagram.com/p/{post.shortcode}"
                     caption = post.caption if post.caption else "[Без описания]"
                     
-                    subject = f"Новый пост от {username}"
-                    body = f"Пользователь @{username} выложил новую публикацию!\n\nСсылка: {post_url}\n\nОписание:\n{caption}"
+                    # Расчет времени публикации (Перевод из UTC в GMT+5)
+                    local_time = post.date_utc + timedelta(hours=5)
+                    formatted_time = local_time.strftime("%d.%m.%Y %H:%M:%S")
+                    
+                    # Проверяем тип контента для добавления прямой ссылки на вложение в тело
+                    media_url = post.video_url if post.is_video else post.url
+                    attachment_str = f"Вложение (прямая ссылка): {media_url}" if media_url else "[Медиа недоступно]"
+                    
+                    # Статичная тема письма
+                    subject = "Instagram"
+                    
+                    # Формирование тела письма
+                    body = (
+                        f"Автор: {username}\n"
+                        f"Время публикации: {formatted_time}\n"
+                        f"Ссылка на пост: {post_url}\n\n"
+                        f"{attachment_str}\n\n"
+                        f"Описание:\n{caption}"
+                    )
                     
                     send_email(subject, body)
                     
